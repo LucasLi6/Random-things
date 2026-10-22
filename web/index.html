@@ -68,17 +68,54 @@
   #status.connected { background: var(--ok); color: #fff; }
   #status.connecting { background: var(--accent-soft); color: var(--accent); }
   #status.error { background: var(--danger); color: #fff; }
-  .knob-wrap {
+
+  .slider-wrap {
     position: relative;
-    width: 240px;
-    height: 240px;
-    margin: 0 auto 8px;
+    width: 64px;
+    height: 260px;
+    margin: 0 auto 16px;
     touch-action: none;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
   }
-  #knob-svg { width: 100%; height: 100%; }
-  #track { stroke: var(--track); }
-  #hand line { stroke: var(--accent); }
-  #hub { fill: var(--accent); }
+  .slider-track {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    transform: translateX(-50%);
+    width: 14px;
+    border-radius: 999px;
+    background: var(--track);
+  }
+  .slider-fill {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 0%;
+    border-radius: 999px;
+    background: var(--accent);
+  }
+  .slider-ticks { position: absolute; inset: 0; pointer-events: none; }
+  .tick {
+    position: absolute;
+    left: 0; right: 0;
+    height: 2px;
+    background: var(--muted);
+    opacity: 0.35;
+  }
+  .slider-thumb {
+    position: absolute;
+    left: 50%;
+    bottom: 0;
+    transform: translate(-50%, 50%);
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 3px solid var(--card);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  }
   #level-readout {
     font-size: 40px;
     font-weight: 700;
@@ -110,22 +147,25 @@
 <body>
   <div class="card">
     <h1>舵机控制</h1>
-    <p class="sub">拖拽旋钮 · 0~100 压力值</p>
+    <p class="sub">向上拖动滑块 · 松手自动回零</p>
     <span id="status">未连接</span>
 
-    <div class="knob-wrap" id="knob">
-      <svg id="knob-svg" viewBox="0 0 200 200">
-        <path id="track" d="M 30.7 140 A 80 80 0 1 1 169.3 140"
-              fill="none" stroke-width="14" stroke-linecap="round"/>
-        <g id="hand">
-          <line x1="100" y1="100" x2="100" y2="26" stroke-width="9" stroke-linecap="round"/>
-        </g>
-        <circle id="hub" cx="100" cy="100" r="13"/>
-      </svg>
+    <div class="slider-wrap" id="slider">
+      <div class="slider-track">
+        <div class="slider-fill" id="fill"></div>
+        <div class="slider-ticks">
+          <span class="tick" style="bottom:0%"></span>
+          <span class="tick" style="bottom:25%"></span>
+          <span class="tick" style="bottom:50%"></span>
+          <span class="tick" style="bottom:75%"></span>
+          <span class="tick" style="bottom:100%"></span>
+        </div>
+        <div class="slider-thumb" id="thumb"></div>
+      </div>
     </div>
 
     <div id="level-readout">0</div>
-    <div class="unit">压力值</div>
+    <div class="unit" id="angle-readout">舵机角度 180°</div>
 
     <button id="btn">连接舵机</button>
 
@@ -142,11 +182,17 @@
   const CHAR_PHONE_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a9';
   const DEVICE_PREFIX = 'ESP32-LED-RX';
 
+  // 5 档：发送值分别落在接收端 5 个区间，对应 5 个舵机角度（与接收端一致）
+  const LEVELS = [0, 25, 50, 75, 100];
+  const ANGLES = [180, 141, 103, 64, 25];
+
   const statusEl = document.getElementById('status');
   const btn = document.getElementById('btn');
-  const hand = document.getElementById('hand');
+  const slider = document.getElementById('slider');
+  const fill = document.getElementById('fill');
+  const thumb = document.getElementById('thumb');
   const readout = document.getElementById('level-readout');
-  const knob = document.getElementById('knob');
+  const angleReadout = document.getElementById('angle-readout');
   const hintIos = document.getElementById('hint-ios');
   const hintUnsupported = document.getElementById('hint-unsupported');
 
@@ -161,15 +207,25 @@
     statusEl.className = cls || '';
   }
 
-  // 0~100 -> 指针旋转角（上=0，顺时针正），再转成 SVG 角度
-  function levelToRotation(l) {
-    return (-120 + (l / 100) * 240) - 90;
+  // 0~100 连续值 -> 就近落到 5 档之一
+  function snapLevel(v) {
+    const idx = Math.max(0, Math.min(4, Math.round(v / 25)));
+    return LEVELS[idx];
   }
 
-  function setKnob(l) {
-    level = Math.max(0, Math.min(100, l));
-    hand.setAttribute('transform', 'rotate(' + levelToRotation(level) + ' 100 100)');
+  // 档位值 -> 舵机角度（显示用，与接收端一致）
+  function angleFor(l) {
+    return ANGLES[Math.max(0, Math.min(4, Math.round(l / 25)))];
+  }
+
+  function setSlider(l, animate) {
+    level = snapLevel(l);
+    thumb.style.transition = animate ? 'bottom 0.22s ease-out' : 'none';
+    fill.style.transition = animate ? 'height 0.22s ease-out' : 'none';
+    thumb.style.bottom = level + '%';
+    fill.style.height = level + '%';
     readout.textContent = Math.round(level);
+    angleReadout.textContent = '舵机角度 ' + angleFor(level) + '°';
   }
 
   async function sendLevel(l) {
@@ -183,34 +239,35 @@
     }
   }
 
-  // --- 拖拽：把指针相对圆心的角度映射成 0~100 ---
-  function angleFromEvent(e) {
-    const rect = knob.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    const dx = e.clientX - cx;
-    const dy = e.clientY - cy;
-    let deg = Math.atan2(dx, -dy) * 180 / Math.PI;   // 上=0，顺时针正
-    deg = Math.max(-120, Math.min(120, deg));
-    return (deg + 120) / 240 * 100;
+  // 指针 Y 坐标 -> 5 档之一（底部=0，顶部=100）
+  function levelFromY(clientY) {
+    const rect = slider.getBoundingClientRect();
+    const pct = (rect.bottom - clientY) / rect.height;
+    return snapLevel(Math.max(0, Math.min(1, pct)) * 100);
   }
 
-  knob.addEventListener('pointerdown', (e) => {
+  slider.addEventListener('pointerdown', (e) => {
     if (!char) { setStatus('请先连接', 'error'); return; }
     dragging = true;
-    knob.setPointerCapture(e.pointerId);
-    const l = angleFromEvent(e);
-    setKnob(l);
+    slider.setPointerCapture(e.pointerId);
+    const l = levelFromY(e.clientY);
+    setSlider(l, false);
     sendLevel(l);
   });
-  knob.addEventListener('pointermove', (e) => {
+  slider.addEventListener('pointermove', (e) => {
     if (!dragging) return;
-    const l = angleFromEvent(e);
-    setKnob(l);
+    const l = levelFromY(e.clientY);
+    setSlider(l, false);
     sendLevel(l);
   });
-  knob.addEventListener('pointerup', () => { dragging = false; });
-  knob.addEventListener('pointercancel', () => { dragging = false; });
+  function release() {
+    if (!dragging) return;
+    dragging = false;
+    setSlider(0, true);   // 松手自动回零
+    sendLevel(0);
+  }
+  slider.addEventListener('pointerup', release);
+  slider.addEventListener('pointercancel', release);
 
   // --- 蓝牙 ---
   async function connect() {
@@ -255,6 +312,7 @@
   function onDisconnected() {
     char = null;
     lastSent = -1;
+    dragging = false;
     setStatus('已断开', '');
     btn.textContent = '连接舵机';
     if (device) {
@@ -278,7 +336,7 @@
     hintIos.classList.remove('hidden');
   }
 
-  setKnob(0);
+  setSlider(0, false);
 })();
 </script>
 </body>
