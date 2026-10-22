@@ -2,7 +2,7 @@
  * BLE 接收端（peripheral / GATT server）—— 同时服务两个控制端：
  *   - sender（ESP32 主控）：写 0~100 压力等级到特征值 A
  *   - 手机 iOS App（备用）：写 0~100 压力等级到特征值 B
- * 接收端取两路的最大值 max(A, B)，映射成舵机角度输出（0 -> 180°，100 -> 25°），
+ * 接收端取两路的最大值 max(A, B)，均分 5 档映射成舵机角度输出（0档=180°张开，4档=25°闭合），
  * 用 LEDC 输出 50Hz PWM 到 GPIO4。
  *
  * 掉线处理：记住每路对应的 conn_id，某一端断开就只把那一路的贡献清零，
@@ -31,7 +31,7 @@
 
 // 舵机标定（可按你的舵机实测调整）：
 #define SERVO_MIN_US  500                                   // 0°   脉冲宽度
-#define SERVO_MAX_US  2600                                  // 180° 脉冲宽度（你实测 2.6ms）
+#define SERVO_MAX_US  2500                                  // 180° 脉冲宽度（你实测 2.6ms）
 
 // 两路最新压力值（0~100），默认 0 = 无贡献
 static uint8_t g_senderLevel = 0;
@@ -41,11 +41,19 @@ static uint8_t g_phoneLevel  = 0;
 static uint16_t g_senderConnId = 0xFFFF;
 static uint16_t g_phoneConnId  = 0xFFFF;
 
-// 0~100 压力 -> 舵机角度（连续线性，反向：0=张开 180°，100=闭合 25°）
+// 0~100 压力 -> 舵机角度（均分 5 档，每档一个固定角度，反向：0档=张开，4档=闭合）
+//   档 0:   0~ 19  -> 180°（张开）
+//   档 1:  20~ 39  -> 141°
+//   档 2:  40~ 59  -> 103°
+//   档 3:  60~ 79  ->  64°
+//   档 4:  80~100  ->  25°（闭合）
 int levelToAngle(int level) {
   if (level < 0) level = 0;
   if (level > 100) level = 100;
-  return 180 - (level * 155) / 100;   // 155 = 180 - 25
+  static const int angles[5] = { 180, 141, 103, 64, 25 };
+  int idx = level / 20;              // 每档约 20 个等级
+  if (idx > 4) idx = 4;              // 100/20=5，夹回第 4 档
+  return angles[idx];
 }
 
 // 角度 -> 脉冲宽度(us)
