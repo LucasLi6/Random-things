@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>舵机控制</title>
+<title>Servo Control</title>
 <style>
   :root {
     --bg: #f4f5f7;
@@ -146,9 +146,9 @@
 </head>
 <body>
   <div class="card">
-    <h1>舵机控制</h1>
-    <p class="sub">向上拖动滑块 · 松手自动回零</p>
-    <span id="status">未连接</span>
+    <h1>Servo Control</h1>
+    <p class="sub">Drag slider up · auto-returns to zero</p>
+    <span id="status">Not connected</span>
 
     <div class="slider-wrap" id="slider">
       <div class="slider-track">
@@ -165,24 +165,24 @@
     </div>
 
     <div id="level-readout">0</div>
-    <div class="unit" id="angle-readout">舵机角度 180°</div>
+    <div class="unit" id="angle-readout">Servo angle 180°</div>
 
-    <button id="btn">连接舵机</button>
+    <button id="btn">Connect servo</button>
 
-    <p class="hint hidden" id="hint-ios">iPhone 请用 <b>Bluefy</b> 浏览器打开本页；Android 用 Chrome 即可。</p>
-    <p class="hint hidden" id="hint-unsupported">当前浏览器不支持蓝牙，请用 Chrome（Android）或 Bluefy（iPhone）。</p>
+    <p class="hint hidden" id="hint-ios">On iPhone, open this page in <b>Bluefy</b>; on Android use Chrome.</p>
+    <p class="hint hidden" id="hint-unsupported">This browser doesn't support Bluetooth. Use Chrome (Android) or Bluefy (iPhone).</p>
   </div>
 
 <script>
 (function () {
   'use strict';
 
-  // 与 receiver/src/main.cpp 保持一致
+  // Keep in sync with receiver/src/main.cpp
   const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
   const CHAR_PHONE_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a9';
   const DEVICE_PREFIX = 'ESP32-LED-RX';
 
-  // 5 档：发送值分别落在接收端 5 个区间，对应 5 个舵机角度（与接收端一致）
+  // 5 levels: sent values snap to the nearest level and map to a servo angle (matches receiver)
   const LEVELS = [0, 25, 50, 75, 100];
   const ANGLES = [180, 141, 103, 64, 25];
 
@@ -207,13 +207,13 @@
     statusEl.className = cls || '';
   }
 
-  // 0~100 连续值 -> 就近落到 5 档之一
+  // 0~100 continuous value -> snap to nearest of the 5 levels
   function snapLevel(v) {
     const idx = Math.max(0, Math.min(4, Math.round(v / 25)));
     return LEVELS[idx];
   }
 
-  // 档位值 -> 舵机角度（显示用，与接收端一致）
+  // level value -> servo angle (display only, matches receiver)
   function angleFor(l) {
     return ANGLES[Math.max(0, Math.min(4, Math.round(l / 25)))];
   }
@@ -225,7 +225,7 @@
     thumb.style.bottom = level + '%';
     fill.style.height = level + '%';
     readout.textContent = Math.round(level);
-    angleReadout.textContent = '舵机角度 ' + angleFor(level) + '°';
+    angleReadout.textContent = 'Servo angle ' + angleFor(level) + '°';
   }
 
   async function sendLevel(l) {
@@ -239,7 +239,7 @@
     }
   }
 
-  // 指针 Y 坐标 -> 5 档之一（底部=0，顶部=100）
+  // pointer Y -> one of the 5 levels (bottom = 0, top = 100)
   function levelFromY(clientY) {
     const rect = slider.getBoundingClientRect();
     const pct = (rect.bottom - clientY) / rect.height;
@@ -247,7 +247,7 @@
   }
 
   slider.addEventListener('pointerdown', (e) => {
-    if (!char) { setStatus('请先连接', 'error'); return; }
+    if (!char) { setStatus('Connect first', 'error'); return; }
     dragging = true;
     slider.setPointerCapture(e.pointerId);
     const l = levelFromY(e.clientY);
@@ -263,22 +263,22 @@
   function release() {
     if (!dragging) return;
     dragging = false;
-    setSlider(0, true);   // 松手自动回零
+    setSlider(0, true);   // auto-return to zero on release
     sendLevel(0);
   }
   slider.addEventListener('pointerup', release);
   slider.addEventListener('pointercancel', release);
 
-  // --- 蓝牙 ---
+  // --- Bluetooth ---
   async function connect() {
     if (!navigator.bluetooth) {
       hintUnsupported.classList.remove('hidden');
       hintIos.classList.add('hidden');
-      setStatus('浏览器不支持', 'error');
+      setStatus('Bluetooth not supported', 'error');
       return;
     }
     try {
-      setStatus('连接中…', 'connecting');
+      setStatus('Connecting…', 'connecting');
       btn.disabled = true;
       device = await navigator.bluetooth.requestDevice({
         filters: [{ namePrefix: DEVICE_PREFIX }],
@@ -289,13 +289,13 @@
       const service = await server.getPrimaryService(SERVICE_UUID);
       char = await service.getCharacteristic(CHAR_PHONE_UUID);
       lastSent = -1;
-      setStatus('已连接：' + (device.name || DEVICE_PREFIX), 'connected');
-      btn.textContent = '断开连接';
+      setStatus('Connected: ' + (device.name || DEVICE_PREFIX), 'connected');
+      btn.textContent = 'Disconnect';
     } catch (e) {
       if (e && e.name === 'NotFoundError') {
-        setStatus('已取消', '');
+        setStatus('Cancelled', '');
       } else {
-        setStatus('连接失败', 'error');
+        setStatus('Connect failed', 'error');
         console.warn(e);
       }
     } finally {
@@ -305,7 +305,7 @@
 
   function disconnect() {
     if (device && device.gatt.connected) {
-      device.gatt.disconnect();   // 触发 gattserverdisconnected -> onDisconnected
+      device.gatt.disconnect();   // triggers gattserverdisconnected -> onDisconnected
     }
   }
 
@@ -313,8 +313,8 @@
     char = null;
     lastSent = -1;
     dragging = false;
-    setStatus('已断开', '');
-    btn.textContent = '连接舵机';
+    setStatus('Disconnected', '');
+    btn.textContent = 'Connect servo';
     if (device) {
       device.removeEventListener('gattserverdisconnected', onDisconnected);
       device = null;
@@ -329,7 +329,7 @@
     }
   });
 
-  // 提示语按浏览器/平台显示
+  // show hint based on browser/platform
   if (!navigator.bluetooth) {
     hintUnsupported.classList.remove('hidden');
   } else if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
