@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>舵机控制</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --fg: #1c1e21;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-soft: #dbeafe;
+    --track: #e5e7eb;
+    --danger: #dc2626;
+    --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111318;
+      --card: #1b1e25;
+      --fg: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #60a5fa;
+      --accent-soft: #1e3a5f;
+      --track: #2a2e37;
+      --danger: #f87171;
+      --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "PingFang SC", "Microsoft YaHei", sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .card {
+    width: 100%;
+    max-width: 360px;
+    background: var(--card);
+    border-radius: 24px;
+    padding: 28px 24px;
+    text-align: center;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+  }
+  h1 { margin: 0 0 4px; font-size: 24px; }
+  .sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+  #status {
+    display: inline-block;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 14px;
+    background: var(--track);
+    color: var(--muted);
+    margin-bottom: 20px;
+  }
+  #status.connected { background: var(--ok); color: #fff; }
+  #status.connecting { background: var(--accent-soft); color: var(--accent); }
+  #status.error { background: var(--danger); color: #fff; }
+  .knob-wrap {
+    position: relative;
+    width: 240px;
+    height: 240px;
+    margin: 0 auto 8px;
+    touch-action: none;
+  }
+  #knob-svg { width: 100%; height: 100%; }
+  #track { stroke: var(--track); }
+  #hand line { stroke: var(--accent); }
+  #hub { fill: var(--accent); }
+  #level-readout {
+    font-size: 40px;
+    font-weight: 700;
+    margin: 8px 0 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .unit { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+  button {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 14px;
+    font-size: 17px;
+    font-weight: 600;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .hint {
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>舵机控制</h1>
+    <p class="sub">拖拽旋钮 · 0~100 压力值</p>
+    <span id="status">未连接</span>
+
+    <div class="knob-wrap" id="knob">
+      <svg id="knob-svg" viewBox="0 0 200 200">
+        <path id="track" d="M 30.7 140 A 80 80 0 1 1 169.3 140"
+              fill="none" stroke-width="14" stroke-linecap="round"/>
+        <g id="hand">
+          <line x1="100" y1="100" x2="100" y2="26" stroke-width="9" stroke-linecap="round"/>
+        </g>
+        <circle id="hub" cx="100" cy="100" r="13"/>
+      </svg>
+    </div>
+
+    <div id="level-readout">0</div>
+    <div class="unit">压力值</div>
+
+    <button id="btn">连接舵机</button>
+
+    <p class="hint hidden" id="hint-ios">iPhone 请用 <b>Bluefy</b> 浏览器打开本页；Android 用 Chrome 即可。</p>
+    <p class="hint hidden" id="hint-unsupported">当前浏览器不支持蓝牙，请用 Chrome（Android）或 Bluefy（iPhone）。</p>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+
+  // 与 receiver/src/main.cpp 保持一致
+  const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+  const CHAR_PHONE_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a9';
+  const DEVICE_PREFIX = 'ESP32-LED-RX';
+
+  const statusEl = document.getElementById('status');
+  const btn = document.getElementById('btn');
+  const hand = document.getElementById('hand');
+  const readout = document.getElementById('level-readout');
+  const knob = document.getElementById('knob');
+  const hintIos = document.getElementById('hint-ios');
+  const hintUnsupported = document.getElementById('hint-unsupported');
+
+  let device = null;
+  let char = null;
+  let level = 0;
+  let lastSent = -1;
+  let dragging = false;
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = cls || '';
+  }
+
+  // 0~100 -> 指针旋转角（上=0，顺时针正），再转成 SVG 角度
+  function levelToRotation(l) {
+    return (-120 + (l / 100) * 240) - 90;
+  }
+
+  function setKnob(l) {
+    level = Math.max(0, Math.min(100, l));
+    hand.setAttribute('transform', 'rotate(' + levelToRotation(level) + ' 100 100)');
+    readout.textContent = Math.round(level);
+  }
+
+  async function sendLevel(l) {
+    const v = Math.round(Math.max(0, Math.min(100, l)));
+    if (!char || v === lastSent) return;
+    lastSent = v;
+    try {
+      await char.writeValueWithoutResponse(new Uint8Array([v]));
+    } catch (e) {
+      console.warn('write failed', e);
+    }
+  }
+
+  // --- 拖拽：把指针相对圆心的角度映射成 0~100 ---
+  function angleFromEvent(e) {
+    const rect = knob.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = e.clientX - cx;
+    const dy = e.clientY - cy;
+    let deg = Math.atan2(dx, -dy) * 180 / Math.PI;   // 上=0，顺时针正
+    deg = Math.max(-120, Math.min(120, deg));
+    return (deg + 120) / 240 * 100;
+  }
+
+  knob.addEventListener('pointerdown', (e) => {
+    if (!char) { setStatus('请先连接', 'error'); return; }
+    dragging = true;
+    knob.setPointerCapture(e.pointerId);
+    const l = angleFromEvent(e);
+    setKnob(l);
+    sendLevel(l);
+  });
+  knob.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const l = angleFromEvent(e);
+    setKnob(l);
+    sendLevel(l);
+  });
+  knob.addEventListener('pointerup', () => { dragging = false; });
+  knob.addEventListener('pointercancel', () => { dragging = false; });
+
+  // --- 蓝牙 ---
+  async function connect() {
+    if (!navigator.bluetooth) {
+      hintUnsupported.classList.remove('hidden');
+      hintIos.classList.add('hidden');
+      setStatus('浏览器不支持', 'error');
+      return;
+    }
+    try {
+      setStatus('连接中…', 'connecting');
+      btn.disabled = true;
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: DEVICE_PREFIX }],
+        optionalServices: [SERVICE_UUID]
+      });
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      char = await service.getCharacteristic(CHAR_PHONE_UUID);
+      lastSent = -1;
+      setStatus('已连接：' + (device.name || DEVICE_PREFIX), 'connected');
+      btn.textContent = '断开连接';
+    } catch (e) {
+      if (e && e.name === 'NotFoundError') {
+        setStatus('已取消', '');
+      } else {
+        setStatus('连接失败', 'error');
+        console.warn(e);
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function disconnect() {
+    if (device && device.gatt.connected) {
+      device.gatt.disconnect();   // 触发 gattserverdisconnected -> onDisconnected
+    }
+  }
+
+  function onDisconnected() {
+    char = null;
+    lastSent = -1;
+    setStatus('已断开', '');
+    btn.textContent = '连接舵机';
+    if (device) {
+      device.removeEventListener('gattserverdisconnected', onDisconnected);
+      device = null;
+    }
+  }
+
+  btn.addEventListener('click', () => {
+    if (device && device.gatt.connected) {
+      disconnect();
+    } else {
+      connect();
+    }
+  });
+
+  // 提示语按浏览器/平台显示
+  if (!navigator.bluetooth) {
+    hintUnsupported.classList.remove('hidden');
+  } else if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
+    hintIos.classList.remove('hidden');
+  }
+
+  setKnob(0);
+})();
+</script>
+</body>
+</html>
